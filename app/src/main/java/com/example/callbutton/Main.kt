@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.*
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.*
@@ -59,6 +62,8 @@ class HeadsetService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var pending: Runnable? = null
     private var lastPress = 0L
+    private var track: AudioTrack? = null
+    @Volatile private var running = true
 
     override fun onBind(i: Intent?) = null
 
@@ -70,6 +75,7 @@ class HeadsetService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play).build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         else startForeground(1, n)
+
         session = MediaSession(this, "CallButton")
         session.setCallback(object : MediaSession.Callback() {
             @Suppress("DEPRECATION")
@@ -89,7 +95,37 @@ class HeadsetService : Service() {
                 .setState(PlaybackState.STATE_PLAYING, 0, 1f).build()
         )
         session.isActive = true
-        Bus.log("Luisteren gestart. Druk nu op je oordopjes.")
+        startSilence()
+        Bus.log("Luisteren gestart (met stille audio). Druk nu op je oordopjes.")
+    }
+
+    // Speelt stilte af zodat Android deze app als muziekspeler ziet
+    private fun startSilence() {
+        try {
+            val rate = 8000
+            val buf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val t = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder().setSampleRate(rate)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()
+                )
+                .setBufferSizeInBytes(buf)
+                .setTransferMode(AudioTrack.MODE_STREAM).build()
+            t.play()
+            track = t
+            Thread {
+                val zeros = ByteArray(buf)
+                while (running) t.write(zeros, 0, zeros.size)
+            }.start()
+        } catch (e: Exception) {
+            Bus.log("Stille audio mislukt: ${e.message}")
+        }
     }
 
     // 1x drukken = opnemen, 2x snel drukken = weigeren
@@ -107,6 +143,8 @@ class HeadsetService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
+        try { track?.stop(); track?.release() } catch (e: Exception) {}
         session.release()
         Bus.log("Gestopt")
         super.onDestroy()
