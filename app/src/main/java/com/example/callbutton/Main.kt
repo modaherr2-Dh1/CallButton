@@ -29,6 +29,10 @@ object Bus {
     @Synchronized fun text(): String = lines.joinToString("\n\n")
 }
 
+val ANSWER_WORDS = listOf("answer", "accept", "opnemen", "aannemen", "beantwoorden")
+val DECLINE_WORDS = listOf("decline", "reject", "weiger", "afwijzen")
+fun hit(t: CharSequence?, w: List<String>) = w.any { t.toString().lowercase().contains(it) }
+
 class MainActivity : Activity() {
     private lateinit var logView: TextView
     override fun onCreate(b: Bundle?) {
@@ -43,10 +47,11 @@ class MainActivity : Activity() {
         btn("1. Meldingstoegang geven") {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }
-        btn("2. Start luisteren naar oordopjes") {
+        btn("2. Start luisteren") {
             if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
             startForegroundService(Intent(this, HeadsetService::class.java))
         }
+        btn("Test: knop 20 sec (zonder gesprek)") { HeadsetService.instance?.testMode() }
         btn("Stop") { stopService(Intent(this, HeadsetService::class.java)) }
         logView = TextView(this).apply { textSize = 14f }
         root.addView(ScrollView(this).apply { addView(logView) })
@@ -58,6 +63,8 @@ class MainActivity : Activity() {
 }
 
 class HeadsetService : Service() {
+    companion object { @Volatile var instance: HeadsetService? = null }
+
     private lateinit var session: MediaSession
     private val handler = Handler(Looper.getMainLooper())
     private var pending: Runnable? = null
@@ -69,9 +76,10 @@ class HeadsetService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel("ch", "Oordopjes", NotificationManager.IMPORTANCE_LOW))
-        val n = Notification.Builder(this, "ch").setContentTitle("CallButton luistert")
+        val n = Notification.Builder(this, "ch").setContentTitle("CallButton wacht op een WhatsApp-gesprek")
             .setSmallIcon(android.R.drawable.ic_media_play).build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         else startForeground(1, n)
@@ -89,17 +97,39 @@ class HeadsetService : Service() {
                 return true
             }
         })
-        session.setPlaybackState(
-            PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE)
-                .setState(PlaybackState.STATE_PLAYING, 0, 1f).build()
-        )
-        session.isActive = true
         startSilence()
-        Bus.log("Luisteren gestart (met stille audio). Druk nu op je oordopjes.")
+        Bus.log("Klaar. Muziekknoppen werken normaal. Bij een WhatsApp-gesprek neem ik de knop over.")
     }
 
-    // Speelt stilte af zodat Android deze app als muziekspeler ziet
+    // Knop-modus: alleen AAN tijdens een gesprek, zodat muziek normaal blijft werken
+    fun setCallMode(on: Boolean) {
+        handler.post {
+            try {
+                if (on) {
+                    session.setPlaybackState(
+                        PlaybackState.Builder()
+                            .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE)
+                            .setState(PlaybackState.STATE_PLAYING, 0, 1f).build()
+                    )
+                    session.isActive = true
+                    track?.play()
+                    Bus.log("Knop-modus AAN")
+                } else {
+                    session.isActive = false
+                    track?.pause()
+                    Bus.log("Knop-modus UIT (muziekknoppen werken weer)")
+                }
+            } catch (e: Exception) {
+                Bus.log("Fout: ${e.message}")
+            }
+        }
+    }
+
+    fun testMode() {
+        setCallMode(true)
+        handler.postDelayed({ if (CallListener.current == null) setCallMode(false) }, 20000)
+    }
+
     private fun startSilence() {
         try {
             val rate = 8000
@@ -117,11 +147,10 @@ class HeadsetService : Service() {
                 )
                 .setBufferSizeInBytes(buf)
                 .setTransferMode(AudioTrack.MODE_STREAM).build()
-            t.play()
             track = t
             Thread {
                 val zeros = ByteArray(buf)
-                while (running) t.write(zeros, 0, zeros.size)
+                while (running) { if (t.write(zeros, 0, zeros.size) < 0) break }
             }.start()
         } catch (e: Exception) {
             Bus.log("Stille audio mislukt: ${e.message}")
@@ -144,6 +173,7 @@ class HeadsetService : Service() {
 
     override fun onDestroy() {
         running = false
+        instance = null
         try { track?.stop(); track?.release() } catch (e: Exception) {}
         session.release()
         Bus.log("Gestopt")
@@ -155,13 +185,22 @@ class CallListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!sbn.packageName.startsWith("com.whatsapp")) return
         val n = sbn.notification
-        val titles = n.actions?.joinToString(" | ") { it.title.toString() } ?: "geen"
-        Bus.log("WhatsApp-melding: categorie=${n.category}, knoppen=[$titles]")
-        if (n.category == Notification.CATEGORY_CALL && n.actions != null) current = sbn
+        val acts = n.actions
+        val titles = acts?.joinToString(" | ") { it.title.toString() } ?: "geen"
+        Bus.log("WhatsApp-melding: categorie=${n.category}, knoppen=[$titles], schermvullend=${n.fullScreenIntent != null}")
+        val looksLikeCall = acts != null && acts.any { hit(it.title, ANSWER_WORDS) || hit(it.title, DECLINE_WORDS) }
+        if ((n.category == Notification.CATEGORY_CALL && acts != null) || looksLikeCall) {
+            current = sbn
+            HeadsetService.instance?.setCallMode(true)
+        }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (sbn.key == current?.key) { current = null; Bus.log("Gesprek-melding weg") }
+        if (sbn.key == current?.key) {
+            current = null
+            Bus.log("Gesprek-melding weg")
+            HeadsetService.instance?.setCallMode(false)
+        }
     }
 
     companion object {
@@ -170,17 +209,12 @@ class CallListener : NotificationListenerService() {
         fun act(answer: Boolean) {
             val what = if (answer) "opnemen" else "weigeren"
             val acts = current?.notification?.actions
-            if (acts == null || acts.isEmpty()) { Bus.log("Geen WhatsApp-gesprek om te $what"); return }
-            val words = if (answer)
-                listOf("answer", "accept", "antwoord", "opnemen", "aannemen", "beantwoord", "رد")
-            else
-                listOf("decline", "reject", "weiger", "afwijzen", "ophangen", "رفض")
-            var a = acts.firstOrNull { x -> words.any { x.title.toString().lowercase().contains(it) } }
-            if (a == null && acts.size >= 2) {
-                a = if (answer) acts.last() else acts.first()
-                Bus.log("Knoptekst niet herkend, gok op volgorde")
+            if (acts == null || acts.isEmpty()) { Bus.log("Geen WhatsApp-gesprek met knoppen om te $what"); return }
+            val a = acts.firstOrNull { hit(it.title, if (answer) ANSWER_WORDS else DECLINE_WORDS) }
+            if (a == null) {
+                Bus.log("Geen knop gevonden om te $what. Beschikbaar: " + acts.joinToString(" | ") { it.title.toString() })
+                return
             }
-            if (a == null) return
             try {
                 a.actionIntent.send()
                 Bus.log("Gedaan: $what (${a.title})")
