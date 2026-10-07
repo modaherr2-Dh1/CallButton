@@ -207,6 +207,7 @@ class CallListener : NotificationListenerService() {
         @Volatile var current: StatusBarNotification? = null
 
         fun act(answer: Boolean) {
+                        if (AnswerService.click(answer)) return
             val what = if (answer) "opnemen" else "weigeren"
             val acts = current?.notification?.actions
             if (acts == null || acts.isEmpty()) { Bus.log("Geen WhatsApp-gesprek met knoppen om te $what"); return }
