@@ -192,6 +192,8 @@ class CallListener : NotificationListenerService() {
         if ((n.category == Notification.CATEGORY_CALL && acts != null) || looksLikeCall) {
             current = sbn
             HeadsetService.instance?.setCallMode(true)
+            AnswerService.scheduleDump()
+        }
         }
     }
 
