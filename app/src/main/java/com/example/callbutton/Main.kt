@@ -189,11 +189,10 @@ class CallListener : NotificationListenerService() {
         val titles = acts?.joinToString(" | ") { it.title.toString() } ?: "geen"
         Bus.log("WhatsApp-melding: categorie=${n.category}, knoppen=[$titles], schermvullend=${n.fullScreenIntent != null}")
         val looksLikeCall = acts != null && acts.any { hit(it.title, ANSWER_WORDS) || hit(it.title, DECLINE_WORDS) }
-        if ((n.category == Notification.CATEGORY_CALL && acts != null) || looksLikeCall) {
+                if ((n.category == Notification.CATEGORY_CALL && acts != null) || looksLikeCall) {
             current = sbn
             HeadsetService.instance?.setCallMode(true)
             AnswerService.scheduleDump()
-        }
         }
     }
 
