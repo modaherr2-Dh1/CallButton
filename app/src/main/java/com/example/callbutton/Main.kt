@@ -56,6 +56,10 @@ class MainActivity : Activity() {
             startForegroundService(Intent(this, HeadsetService::class.java))
         }
         btn("Test: knop 20 sec (zonder gesprek)") { HeadsetService.instance?.testMode() }
+        btn("Test: neem automatisch op (30 sec)") {
+            CallListener.autoUntil = SystemClock.uptimeMillis() + 30000
+            Bus.log("Test actief: laat me nu bellen via WhatsApp")
+        }
         btn("Stop") { stopService(Intent(this, HeadsetService::class.java)) }
         logView = TextView(this).apply { textSize = 14f }
         root.addView(ScrollView(this).apply { addView(logView) })
@@ -143,90 +147,3 @@ class HeadsetService : Service() {
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder().setSampleRate(rate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()
-                )
-                .setBufferSizeInBytes(buf)
-                .setTransferMode(AudioTrack.MODE_STREAM).build()
-            track = t
-            Thread {
-                val zeros = ByteArray(buf)
-                while (running) { if (t.write(zeros, 0, zeros.size) < 0) break }
-            }.start()
-        } catch (e: Exception) {
-            Bus.log("Stille audio mislukt: ${e.message}")
-        }
-    }
-
-    // 1x drukken = opnemen, 2x snel drukken = weigeren
-    private fun press() {
-        val now = SystemClock.uptimeMillis()
-        pending?.let { handler.removeCallbacks(it) }
-        if (now - lastPress < 700) {
-            lastPress = 0; pending = null
-            CallListener.act(false)
-            return
-        }
-        lastPress = now
-        pending = Runnable { lastPress = 0; CallListener.act(true) }
-        handler.postDelayed(pending!!, 700)
-    }
-
-    override fun onDestroy() {
-        running = false
-        instance = null
-        try { track?.stop(); track?.release() } catch (e: Exception) {}
-        session.release()
-        Bus.log("Gestopt")
-        super.onDestroy()
-    }
-}
-
-class CallListener : NotificationListenerService() {
-    override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (!sbn.packageName.startsWith("com.whatsapp")) return
-        val n = sbn.notification
-        val acts = n.actions
-        val titles = acts?.joinToString(" | ") { it.title.toString() } ?: "geen"
-        Bus.log("WhatsApp-melding: categorie=${n.category}, knoppen=[$titles], schermvullend=${n.fullScreenIntent != null}")
-        val looksLikeCall = acts != null && acts.any { hit(it.title, ANSWER_WORDS) || hit(it.title, DECLINE_WORDS) }
-                if ((n.category == Notification.CATEGORY_CALL && acts != null) || looksLikeCall) {
-            current = sbn
-            HeadsetService.instance?.setCallMode(true)
-            AnswerService.scheduleDump()
-        }
-    }
-
-    override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (sbn.key == current?.key) {
-            current = null
-            Bus.log("Gesprek-melding weg")
-            HeadsetService.instance?.setCallMode(false)
-        }
-    }
-
-    companion object {
-        @Volatile var current: StatusBarNotification? = null
-
-        fun act(answer: Boolean) {
-                        if (AnswerService.click(answer)) return
-            val what = if (answer) "opnemen" else "weigeren"
-            val acts = current?.notification?.actions
-            if (acts == null || acts.isEmpty()) { Bus.log("Geen WhatsApp-gesprek met knoppen om te $what"); return }
-            val a = acts.firstOrNull { hit(it.title, if (answer) ANSWER_WORDS else DECLINE_WORDS) }
-            if (a == null) {
-                Bus.log("Geen knop gevonden om te $what. Beschikbaar: " + acts.joinToString(" | ") { it.title.toString() })
-                return
-            }
-            try {
-                a.actionIntent.send()
-                Bus.log("Gedaan: $what (${a.title})")
-            } catch (e: Exception) {
-                Bus.log("Fout: ${e.message}")
-            }
-        }
-    }
-}
