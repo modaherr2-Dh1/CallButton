@@ -7,6 +7,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -18,7 +19,6 @@ class AnswerService : AccessibilityService() {
 
         fun click(answer: Boolean): Boolean = instance?.doClick(answer) ?: false
 
-        // Wordt aangeroepen als er een WhatsApp-gesprek binnenkomt
         fun scheduleDump() {
             val now = System.currentTimeMillis()
             if (now - lastDump < 5000) return
@@ -36,6 +36,18 @@ class AnswerService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
+    // Vangt knoppen van de oordopjes op, ook tijdens het overgaan van een gesprek
+    override fun onKeyEvent(e: KeyEvent): Boolean {
+        val k = e.keyCode
+        if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0 &&
+            (k == KeyEvent.KEYCODE_HEADSETHOOK || k == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
+             k == KeyEvent.KEYCODE_MEDIA_PLAY || k == KeyEvent.KEYCODE_MEDIA_PAUSE)) {
+            Bus.log("KNOP (toegankelijkheid): " + KeyEvent.keyCodeToString(k))
+            HeadsetService.instance?.onHeadsetKey()
+        }
+        return false
+    }
+
     private fun walk(n: AccessibilityNodeInfo, f: (AccessibilityNodeInfo) -> Unit) {
         f(n)
         for (i in 0 until n.childCount) {
@@ -52,7 +64,6 @@ class AnswerService : AccessibilityService() {
         return found
     }
 
-    // Laat zien wat er op het scherm staat en of de knoppen gevonden worden
     fun dump() {
         val out = ArrayList<String>()
         var answerFound = false
@@ -80,7 +91,6 @@ class AnswerService : AccessibilityService() {
         for (w in windows) {
             val root = w.root ?: continue
             val target = findNode(root, words) ?: continue
-            // Manier 1: laat Android op de knop drukken
             var c: AccessibilityNodeInfo? = target
             while (c != null) {
                 if (c.isClickable && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
@@ -90,7 +100,6 @@ class AnswerService : AccessibilityService() {
                 }
                 c = c.parent
             }
-            // Manier 2: tik op de plek van de knop op het scherm
             val r = Rect()
             target.getBoundsInScreen(r)
             if (r.width() > 0 && tap(r.exactCenterX(), r.exactCenterY())) {
@@ -110,7 +119,6 @@ class AnswerService : AccessibilityService() {
         return dispatchGesture(g, null, null)
     }
 
-    // Kijkt na 2,5 seconde of het gesprek echt is opgenomen of geweigerd
     private fun verify(answer: Boolean) {
         h.postDelayed({
             val acts = CallListener.current?.notification?.actions
