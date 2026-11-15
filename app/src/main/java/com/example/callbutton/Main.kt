@@ -6,7 +6,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.ToneGenerator
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.*
@@ -55,6 +57,7 @@ class MainActivity : Activity() {
             if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
             startForegroundService(Intent(this, HeadsetService::class.java))
         }
+        btn("3. Knop altijd actief (AAN/UIT)") { HeadsetService.instance?.togglePermanent() }
         btn("Test: knop 20 sec (zonder gesprek)") { HeadsetService.instance?.testMode() }
         btn("Test: neem automatisch op (30 sec)") {
             CallListener.autoUntil = SystemClock.uptimeMillis() + 30000
@@ -77,8 +80,10 @@ class HeadsetService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var pending: Runnable? = null
     private var lastPress = 0L
+    private var lastToggle = 0L
     private var track: AudioTrack? = null
     @Volatile private var running = true
+    @Volatile private var permanent = false
 
     override fun onBind(i: Intent?) = null
 
@@ -106,10 +111,10 @@ class HeadsetService : Service() {
             }
         })
         startSilence()
-        Bus.log("Klaar. Muziekknoppen werken normaal. Bij een WhatsApp-gesprek neem ik de knop over.")
+        Bus.log("Klaar. Zet 'Knop altijd actief' AAN om met je oordopjes auto-opnemen in te schakelen.")
     }
 
-    // Knop-modus: alleen AAN tijdens een gesprek, zodat muziek normaal blijft werken
+    // Knop-modus: AAN tijdens een gesprek (of permanent), anders werken muziekknoppen normaal
     fun setCallMode(on: Boolean) {
         handler.post {
             try {
@@ -122,7 +127,7 @@ class HeadsetService : Service() {
                     session.isActive = true
                     track?.play()
                     Bus.log("Knop-modus AAN")
-                } else {
+                } else if (!permanent) {
                     session.isActive = false
                     track?.pause()
                     Bus.log("Knop-modus UIT (muziekknoppen werken weer)")
@@ -131,6 +136,13 @@ class HeadsetService : Service() {
                 Bus.log("Fout: ${e.message}")
             }
         }
+    }
+
+    fun togglePermanent() {
+        permanent = !permanent
+        if (permanent) setCallMode(true)
+        else if (CallListener.current == null) setCallMode(false)
+        Bus.log("Knop altijd actief: " + if (permanent) "AAN (muziekknoppen werken nu NIET)" else "UIT")
     }
 
     fun testMode() {
@@ -165,8 +177,33 @@ class HeadsetService : Service() {
         }
     }
 
-    // 1x drukken = opnemen, 2x snel drukken = weigeren
+    private fun beep(on: Boolean) {
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 90)
+            tg.startTone(if (on) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_NACK, 300)
+            handler.postDelayed({ tg.release() }, 1200)
+        } catch (e: Exception) {
+            Bus.log("Piep mislukt: ${e.message}")
+        }
+    }
+
+    // Geen gesprek: 1x drukken schakelt auto-opnemen AAN of UIT (10 minuten)
+    private fun toggleArmed() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastToggle < 500) return
+        lastToggle = now
+        val on = CallListener.autoUntil <= now
+        CallListener.autoUntil = if (on) now + 10 * 60 * 1000 else 0
+        beep(on)
+        Bus.log(
+            if (on) "AUTO-OPNEMEN AAN (10 min): het volgende WhatsApp-gesprek wordt opgenomen"
+            else "Auto-opnemen UIT"
+        )
+    }
+
+    // Tijdens een gesprek: 1x drukken = opnemen, 2x snel drukken = weigeren
     private fun press() {
+        if (CallListener.current == null) { toggleArmed(); return }
         val now = SystemClock.uptimeMillis()
         pending?.let { handler.removeCallbacks(it) }
         if (now - lastPress < 700) {
@@ -203,6 +240,7 @@ class CallListener : NotificationListenerService() {
             AnswerService.scheduleDump()
             if (SystemClock.uptimeMillis() < autoUntil) {
                 autoUntil = 0
+                Bus.log("Auto-opnemen: ik neem op over 2,5 seconde")
                 Handler(Looper.getMainLooper()).postDelayed({ act(true) }, 2500)
             }
         }
