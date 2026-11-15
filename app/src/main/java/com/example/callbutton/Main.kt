@@ -29,9 +29,13 @@ object Bus {
     @Synchronized fun text(): String = lines.joinToString("\n\n")
 }
 
-val ANSWER_WORDS = listOf("answer", "accept", "opnemen", "aannemen", "beantwoorden")
-val DECLINE_WORDS = listOf("decline", "reject", "weiger", "afwijzen")
-fun hit(t: CharSequence?, w: List<String>) = w.any { t.toString().lowercase().contains(it) }
+val ANSWER_WORDS = listOf("answer", "accept", "opnemen", "aannemen", "beantwoorden", "رد")
+val DECLINE_WORDS = listOf("decline", "reject", "weiger", "afwijzen", "رفض")
+fun hit(t: CharSequence?, w: List<String>): Boolean {
+    if (t == null) return false
+    val s = t.toString().lowercase().replace(Regex("[\\u064B-\\u065F]"), "").trim()
+    return w.any { if (it.length <= 3) s == it else s.contains(it) }
+}
 
 class MainActivity : Activity() {
     private lateinit var logView: TextView
