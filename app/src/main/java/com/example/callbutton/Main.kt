@@ -81,6 +81,7 @@ class HeadsetService : Service() {
     private var pending: Runnable? = null
     private var lastPress = 0L
     private var lastToggle = 0L
+    private var lastKey = 0L
     private var track: AudioTrack? = null
     @Volatile private var running = true
     @Volatile private var permanent = false
@@ -105,7 +106,7 @@ class HeadsetService : Service() {
                 if (e != null) {
                     val down = e.action == KeyEvent.ACTION_DOWN
                     Bus.log("KNOP ONTVANGEN: " + KeyEvent.keyCodeToString(e.keyCode) + if (down) " (in)" else " (los)")
-                    if (down && e.repeatCount == 0) press()
+                    if (down && e.repeatCount == 0) onHeadsetKey()
                 }
                 return true
             }
@@ -114,7 +115,14 @@ class HeadsetService : Service() {
         Bus.log("Klaar. Zet 'Knop altijd actief' AAN om met je oordopjes auto-opnemen in te schakelen.")
     }
 
-    // Knop-modus: AAN tijdens een gesprek (of permanent), anders werken muziekknoppen normaal
+    // Eén ingang voor knoppen, uit MediaSession én Toegankelijkheid (met bescherming tegen dubbele meldingen)
+    fun onHeadsetKey() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastKey < 250) return
+        lastKey = now
+        handler.post { press() }
+    }
+
     fun setCallMode(on: Boolean) {
         handler.post {
             try {
@@ -187,18 +195,27 @@ class HeadsetService : Service() {
         }
     }
 
-    // Geen gesprek: 1x drukken schakelt auto-opnemen AAN of UIT (10 minuten)
+    // Geen gesprek: 1x drukken schakelt auto-opnemen AAN (30 seconden) of UIT
     private fun toggleArmed() {
         val now = SystemClock.uptimeMillis()
         if (now - lastToggle < 500) return
         lastToggle = now
         val on = CallListener.autoUntil <= now
-        CallListener.autoUntil = if (on) now + 10 * 60 * 1000 else 0
+        CallListener.autoUntil = if (on) now + 30000 else 0
         beep(on)
-        Bus.log(
-            if (on) "AUTO-OPNEMEN AAN (10 min): het volgende WhatsApp-gesprek wordt opgenomen"
-            else "Auto-opnemen UIT"
-        )
+        if (on) {
+            Bus.log("AUTO-OPNEMEN AAN (30 sec): het volgende WhatsApp-gesprek wordt opgenomen")
+            handler.postDelayed({
+                val t = CallListener.autoUntil
+                if (t != 0L && SystemClock.uptimeMillis() >= t) {
+                    CallListener.autoUntil = 0
+                    beep(false)
+                    Bus.log("Auto-opnemen UIT (30 seconden voorbij)")
+                }
+            }, 30200)
+        } else {
+            Bus.log("Auto-opnemen UIT")
+        }
     }
 
     // Tijdens een gesprek: 1x drukken = opnemen, 2x snel drukken = weigeren
